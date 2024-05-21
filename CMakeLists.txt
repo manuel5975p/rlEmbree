@@ -88,4 +88,6 @@ FetchContent_Declare(embreec
 FetchContent_MakeAvailable(embreec)
 
 add_executable(conversion conversion.cpp)
+target_compile_options(conversion PUBLIC "-fopenmp")
 target_link_libraries(conversion embree raylib)
+target_link_options(conversion PUBLIC "-fopenmp")
