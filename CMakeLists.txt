@@ -81,13 +81,20 @@ set(EMBREE_TUTORIALS_GLFW        OFF CACHE BOOL "" FORCE)
 #set(EMBREE_RAY_PACKETS           OFF CACHE BOOL "" FORCE)
 set("EMBREE_ISA_${MAXSUP}"       ON  CACHE BOOL "" FORCE)
 FetchContent_Declare(embreec 
-    URL https://github.com/RenderKit/embree/archive/refs/tags/v4.3.1.tar.gz
+    URL https://github.com/manuel5975p/manuel5975p.github.io/raw/master/slimbree-4.3.1.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_MakeAvailable(embreec)
 
 add_executable(conversion conversion.cpp)
+target_compile_features(conversion PUBLIC cxx_std_20)
 target_compile_options(conversion PUBLIC "-fopenmp")
 target_link_libraries(conversion embree raylib)
 target_link_options(conversion PUBLIC "-fopenmp")
+
+add_executable         (cfile cfile.c)
+target_compile_features(cfile PUBLIC c_std_11)
+target_compile_options (cfile PUBLIC "-fopenmp")
+target_link_libraries  (cfile embree raylib)
+target_link_options    (cfile PUBLIC "-fopenmp")
