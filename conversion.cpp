@@ -14,23 +14,20 @@
 #include <limits>
 #include <cassert>
 #include <embree4/rtcore.h>
+#include "rlEmbree.h"
 #include "rm_operator.hpp"
 RTCDevice gDevice;
 
-struct sphere_info{
-    Vector3 pos;
-    float radius;
-};
-struct triangle_info{
 
-};
+
 template <class... Fs> struct Overload : Fs... { using Fs::operator()...; };
 template <class... Fs> Overload(Fs...) -> Overload<Fs...>;
 
 struct sceneEntry{
-    std::variant<Mesh, sphere_info, triangle_info> geometry;
+    std::variant<Mesh, sphere_info, triangle_info, cube_info> geometry;
     std::optional<Matrix> transform;
 };
+
 struct reScene{
     RTCScene m_scene;
     operator RTCScene()const noexcept{
@@ -46,6 +43,14 @@ struct reScene{
 };
 reScene gScene;
 
+struct gDeviceIniter{
+    gDeviceIniter(){
+        gDevice = rtcNewDevice(NULL);
+        gScene.m_scene = rtcNewScene(gDevice);
+        rtcSetSceneBuildQuality(gScene.m_scene, RTC_BUILD_QUALITY_HIGH);
+    }
+};
+gDeviceIniter initer;
 RTCGeometry raylib_to_embree(Mesh mesh){
     RTCGeometry ret = rtcNewGeometry(gDevice, RTC_GEOMETRY_TYPE_TRIANGLE);
     float* vb = (float*) rtcSetNewGeometryBuffer(ret, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,  3 * sizeof(float), mesh.vertexCount);
@@ -75,6 +80,89 @@ unsigned int reDrawMesh(Mesh mesh){
     rtcReleaseGeometry(geom);
     return ret;
 }
+unsigned int reDrawCube(Vector3 from, Vector3 end);
+unsigned int reDrawCubeTransformed(Vector3 extents, Matrix trf){
+    Vector3 from = Vector3Transform(Vector3{0, 0, 0}, trf);
+    Vector3 to = Vector3Transform(extents, trf);
+    return reDrawCube(from, to);
+}
+void FinishScene(){
+    rtcCommitScene(gScene.m_scene);
+}
+unsigned int reDrawCube(Vector3 from, Vector3 end) {
+    // Create new geometry for a triangle mesh
+    RTCGeometry geom = rtcNewGeometry(gDevice, RTC_GEOMETRY_TYPE_TRIANGLE);
+    
+    // Compute the 8 vertices of the cube
+    float vertices[8][3] = {
+        {from.x, from.y, from.z},
+        {end.x, from.y, from.z},
+        {end.x, end.y, from.z},
+        {from.x, end.y, from.z},
+        {from.x, from.y, end.z},
+        {end.x, from.y, end.z},
+        {end.x, end.y, end.z},
+        {from.x, end.y, end.z}
+    };
+
+    // Define the 12 triangles (2 per face)
+    int triangles[12][3] = {
+        {0, 1, 2}, {0, 2, 3}, // front face
+        {4, 5, 6}, {4, 6, 7}, // back face
+        {0, 1, 5}, {0, 5, 4}, // bottom face
+        {2, 3, 7}, {2, 7, 6}, // top face
+        {0, 3, 7}, {0, 7, 4}, // left face
+        {1, 2, 6}, {1, 6, 5}  // right face
+    };
+
+    // Allocate buffers
+    float* vb = (float*)rtcSetNewGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3, 3 * sizeof(float), 8);
+    unsigned int* ib = (unsigned int*)rtcSetNewGeometryBuffer(geom, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3, 3 * sizeof(unsigned int), 12);
+
+    // Copy vertex data
+    for (int i = 0; i < 8; ++i) {
+        vb[i * 3] = vertices[i][0];
+        vb[i * 3 + 1] = vertices[i][1];
+        vb[i * 3 + 2] = vertices[i][2];
+    }
+
+    // Copy index data
+    for (int i = 0; i < 12; ++i) {
+        ib[i * 3] = triangles[i][0];
+        ib[i * 3 + 1] = triangles[i][1];
+        ib[i * 3 + 2] = triangles[i][2];
+    }
+
+    // Commit the geometry
+    rtcCommitGeometry(geom);
+    
+    // Attach the geometry to the scene and get the ID
+    unsigned int ret = rtcAttachGeometry(gScene, geom);
+    
+    // Update the scene's geometry map with cube information
+    gScene.geometry_mesh_map[ret] = sceneEntry{cube_info{from, end}, std::nullopt};
+    
+    // Release the geometry
+    rtcReleaseGeometry(geom);
+    
+    return ret;
+}
+unsigned int reDrawSpheres(const Vector3* pos, const float* radii, size_t count){
+    RTCGeometry geom = rtcNewGeometry(gDevice, RTC_GEOMETRY_TYPE_SPHERE_POINT);
+    float* vb = (float*) rtcSetNewGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float), count);
+    for(size_t i = 0;i < count;i++){
+        size_t i4 = i * 4;
+        vb[i4 + 0] = pos[i].x;
+        vb[i4 + 1] = pos[i].y;
+        vb[i4 + 2] = pos[i].z;
+        vb[i4 + 3] = radii[i];
+    }
+    
+    rtcCommitGeometry(geom);
+    unsigned int ret = rtcAttachGeometry(gScene, geom);
+    rtcReleaseGeometry(geom);
+    return ret;
+}
 unsigned int reDrawSphere(Vector3 pos, float radius){
     RTCGeometry geom = rtcNewGeometry(gDevice, RTC_GEOMETRY_TYPE_SPHERE_POINT);
     float* vb = (float*) rtcSetNewGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4,  4 * sizeof(float), 1);
@@ -89,7 +177,7 @@ unsigned int reDrawSphere(Vector3 pos, float radius){
     rtcReleaseGeometry(geom);
     return ret;
 }
-unsigned int reDrawMeshTransformed(Mesh mesh, const Matrix& trf){
+unsigned int reDrawMeshTransformed(Mesh mesh, const Matrix* trf){
     RTCGeometry geom = raylib_to_embree(mesh);
     RTCScene iScene = rtcNewScene(gDevice);
     rtcAttachGeometry(iScene, geom);
@@ -97,12 +185,12 @@ unsigned int reDrawMeshTransformed(Mesh mesh, const Matrix& trf){
     rtcReleaseGeometry(geom);
     RTCGeometry igeom = rtcNewGeometry(gDevice, RTC_GEOMETRY_TYPE_INSTANCE);
     rtcSetGeometryInstancedScene(igeom, iScene);
-    rtcSetGeometryTransform(igeom, 0, RTC_FORMAT_FLOAT3X4_ROW_MAJOR, reinterpret_cast<const float*>(&trf));
+    rtcSetGeometryTransform(igeom, 0, RTC_FORMAT_FLOAT3X4_ROW_MAJOR, reinterpret_cast<const float*>(trf));
     rtcCommitGeometry(igeom);
     unsigned int ret = rtcAttachGeometry(gScene, igeom);
     rtcReleaseGeometry(igeom);
     rtcReleaseScene(iScene);
-    gScene.geometry_mesh_map[ret] = {mesh, trf};
+    gScene.geometry_mesh_map[ret] = {mesh, *trf};
     return ret;
 }
 unsigned int reDrawTriangle(Vector3 v1, Vector3 v2, Vector3 v3){
@@ -122,13 +210,13 @@ unsigned int reDrawTriangle(Vector3 v1, Vector3 v2, Vector3 v3){
 
 }
 
-std::vector<unsigned int> reDrawMeshInstanced(Mesh mesh, const Matrix* trf, unsigned int instanceCount){
+unsigned int* reDrawMeshInstanced(Mesh mesh, const Matrix* trf, unsigned int instanceCount){
     RTCGeometry geom = raylib_to_embree(mesh);
     RTCScene iScene = rtcNewScene(gDevice);
     rtcAttachGeometry(iScene, geom);
     rtcCommitScene(iScene);
     rtcReleaseGeometry(geom);
-    std::vector<unsigned int> ret(instanceCount);
+    unsigned int* ret = (unsigned int*)std::malloc(instanceCount * sizeof(unsigned));
     for(unsigned int i = 0;i < instanceCount;i++){
         RTCGeometry igeom = rtcNewGeometry(gDevice, RTC_GEOMETRY_TYPE_INSTANCE);
         rtcSetGeometryInstancedScene(igeom, iScene);
@@ -145,12 +233,7 @@ std::vector<unsigned int> reDrawMeshInstanced(Mesh mesh, const Matrix* trf, unsi
 void ClearScene(){
     gScene.clear();
 }
-struct Rayhit{
-    Vector3 position;
-    Vector3 normal;
-    float tnear, tfar;
-    float u, v;
-};
+
 RTCRayHit RaycastEx(Ray r){
     RTCRayHit e_rayhit; 
     e_rayhit.ray.org_x = r.position.x; e_rayhit.ray.org_y = r.position.y; e_rayhit.ray.org_z = r.position.z;
@@ -185,6 +268,8 @@ Rayhit Raycast(Ray r){
     RTCRayHit hitex = RaycastEx(r);
     auto it = gScene.geometry_mesh_map.find(hitex.hit.geomID + (hitex.hit.instID[0] == RTC_INVALID_GEOMETRY_ID ? 0 : hitex.hit.instID[0]));
     Rayhit ret{};
+    ret.geomID = hitex.hit.geomID + (hitex.hit.instID[0] == RTC_INVALID_GEOMETRY_ID ? 0 : hitex.hit.instID[0]);
+    ret.faceID = hitex.hit.primID;
     ret.tnear = hitex.ray.tnear;
     ret.tfar = hitex.ray.tfar;
     //if(!std::isinf(hitex.ray.tfar)){
@@ -208,6 +293,13 @@ Rayhit Raycast(Ray r){
                 Vector3 normal = Vector3Normalize(p - sinfo.pos);
                 ret.position = p;
                 ret.normal = normal;
+                //abort();
+            },
+            [&](cube_info sinfo){
+                Vector3 p = r.position + r.direction * ret.tfar;
+                Vector3 normal{hitex.hit.Ng_x, hitex.hit.Ng_y, hitex.hit.Ng_z};
+                ret.position = p;
+                ret.normal = Vector3Normalize(normal);
                 //abort();
             },
             [&](Mesh mesh){
@@ -246,8 +338,8 @@ Rayhit Raycast(Ray r){
     }
     return ret;
 }
-
-void screenloop(const auto& c, int width, int height){
+template<typename callable>
+void screenloop(callable c, int width, int height){
     #pragma omp parallel for collapse(2)
     for(int i = 0;i < height;i++){
         for(int j = 0;j < width;j++){
@@ -255,15 +347,9 @@ void screenloop(const auto& c, int width, int height){
         }
     }
 }
-int main(){
-    
-    gDevice = rtcNewDevice(NULL);
-    gScene.m_scene = rtcNewScene(gDevice);
-    rtcSetSceneBuildQuality(gScene.m_scene, RTC_BUILD_QUALITY_HIGH);
+int maion(){
     InitWindow(2560, 1440, "Raylib Raytracer");
-    Model cube = LoadModel("cube.obj");
-    Model human = LoadModel("ajax.obj");
-    Model cottage = LoadModel("cottage.obj");
+    Model human = LoadModel("../ajax.obj");
     rlDisableBackfaceCulling();
     //RTCGeometry geom = raylib_to_embree(mod.meshes[0]);
     Matrix trfs[4] = {
@@ -284,13 +370,13 @@ int main(){
     for(size_t i = 0;i < meshcount;i++){
         //reDrawMeshTransformed(human.meshes[0], instance_trfs[i]);
     }
-    //reDrawSphere(Vector3{0,1000,0}, 3.4f);
+    //reDrawSphere(Vector3{0,0,0}, 3.4f);
     
-    reDrawTriangle(Vector3{0,0,0}, Vector3{10,0,0}, Vector3{0,10,10});
-    //reDrawTriangle(Vector3{0,0,0}, Vector3{0,0,10}, Vector3{10,0,0});
+    //reDrawTriangle(Vector3{0,0,0}, Vector3{0,0,3}, Vector3{3,0,0});
     
     
     //reDrawSphere(Vector3{2, 0.6, 2}, 2.0f);
+    reDrawCube(Vector3{0, 0, 0},Vector3{1, 1, 1});
     //for(int i = 0;i < cottage.meshCount;i++)
     //    reDrawMeshTransformed(cottage.meshes[i], MatrixTranslate(18.569975, -0.665788, 0.528871));
     //reDrawMeshTransformed(mod.meshes[0], MatrixTranslate(10, 10, 2));
@@ -314,7 +400,7 @@ int main(){
     Camera3D cam;
     cam.fovy = 45.0f;
     cam.projection = CAMERA_PERSPECTIVE;
-    cam.position = Vector3{20, 6, 20};
+    cam.position = Vector3{10, 10, 10};
     cam.target = Vector3{1e-3, 1e-3, 0};
     cam.up = Vector3{0, 1, 0};
     Image rtImage = GenImageColor(GetScreenWidth() / 2, GetScreenHeight(), BLACK);
@@ -340,9 +426,9 @@ int main(){
                     auto hit = Raycast(r);
                     hit.normal = Vector3Normalize(hit.normal);
                     if(!std::isinf(hit.tfar)){
-                        normalized_rgb.x += std::clamp(-1.0f * hit.normal.y, 0.0f, 1.0f) * (1.0f / raytrace_supersampling / raytrace_supersampling);
-                        normalized_rgb.y += std::clamp(-1.0f * hit.normal.y, 0.0f, 1.0f) * (1.0f / raytrace_supersampling / raytrace_supersampling);
-                        normalized_rgb.z += std::clamp(-1.0f * hit.normal.y, 0.0f, 1.0f) * (1.0f / raytrace_supersampling / raytrace_supersampling);
+                        normalized_rgb.x += std::clamp(1.0f * hit.normal.y + 0.1f, 0.0f, 1.0f) * (1.0f / raytrace_supersampling / raytrace_supersampling);
+                        normalized_rgb.y += std::clamp(1.0f * hit.normal.y + 0.1f, 0.0f, 1.0f) * (1.0f / raytrace_supersampling / raytrace_supersampling);
+                        normalized_rgb.z += std::clamp(1.0f * hit.normal.y + 0.1f, 0.0f, 1.0f) * (1.0f / raytrace_supersampling / raytrace_supersampling);
                     }
                 }
             }
@@ -386,4 +472,5 @@ int main(){
         DrawText("Default [Toggle D]", wh * 3 / 2 - 100, 0, 40, should_rasterize ? GREEN : RED);
         EndDrawing();
     }
+    return 0;
 }
